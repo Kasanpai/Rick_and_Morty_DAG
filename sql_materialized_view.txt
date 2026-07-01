@@ -1,0 +1,126 @@
+CREATE SCHEMA IF NOT EXISTS stg;
+CREATE SCHEMA IF NOT EXISTS pres;
+
+
+
+DROP MATERIALIZED VIEW IF EXISTS pres.character_distribution;
+CREATE MATERIALIZED VIEW pres.character_distribution AS
+SELECT
+    status::varchar AS status,
+    species::varchar AS species,
+    gender::varchar AS gender,
+    COUNT(*)::int AS cnt_characters
+FROM stg.characters
+GROUP BY
+    status,
+    species,
+    gender;
+
+
+DROP MATERIALIZED VIEW IF EXISTS pres.location_population;
+CREATE MATERIALIZED VIEW pres.location_population AS
+WITH origins AS (
+    SELECT
+        origin_name AS location_name,
+        COUNT(*)::int AS cnt_origin_characters
+    FROM stg.characters
+    GROUP BY origin_name
+),
+current_locations AS (
+    SELECT
+        location_name,
+        COUNT(*)::int AS cnt_current_characters
+    FROM stg.characters
+    GROUP BY location_name
+)
+SELECT
+    COALESCE(o.location_name, c.location_name)::varchar AS location_name,
+    COALESCE(o.cnt_origin_characters, 0)::int AS cnt_origin_characters,
+    COALESCE(c.cnt_current_characters, 0)::int AS cnt_current_characters
+FROM origins o
+FULL JOIN current_locations c
+    ON o.location_name = c.location_name;
+
+
+
+
+DROP MATERIALIZED VIEW IF EXISTS pres.species_survival;
+CREATE MATERIALIZED VIEW pres.species_survival AS
+SELECT
+    species::varchar AS species,
+    COUNT(*) FILTER (WHERE status = 'Alive')::int AS alive_cnt,
+    COUNT(*) FILTER (WHERE status = 'Dead')::int AS dead_cnt,
+    COUNT(*) FILTER (WHERE status = 'unknown')::int AS unknown_cnt,
+    COUNT(*)::int AS total_cnt
+FROM stg.characters
+GROUP BY species;
+
+DROP MATERIALIZED VIEW IF EXISTS pres.character_migration;
+CREATE MATERIALIZED VIEW pres.character_migration AS
+SELECT
+    id::int AS character_id,
+    name::varchar AS character_name,
+    origin_name::varchar AS origin_location,
+    location_name::varchar AS current_location,
+    (origin_name IS DISTINCT FROM location_name)::boolean AS is_moved
+FROM stg.characters;
+
+DROP MATERIALIZED VIEW IF EXISTS pres.top_locations;
+CREATE MATERIALIZED VIEW pres.top_locations AS
+WITH origins AS (
+    SELECT
+        origin_name AS location_name,
+        COUNT(*)::int AS cnt_origin_characters
+    FROM stg.characters
+    GROUP BY origin_name
+),
+current_locations AS (
+    SELECT
+        location_name,
+        COUNT(*)::int AS cnt_current_characters
+    FROM stg.characters
+    GROUP BY location_name
+),
+location_population AS (
+    SELECT
+        COALESCE(o.location_name, c.location_name)::varchar AS location_name,
+        COALESCE(o.cnt_origin_characters, 0)::int AS cnt_origin_characters,
+        COALESCE(c.cnt_current_characters, 0)::int AS cnt_current_characters
+    FROM origins o
+    FULL JOIN current_locations c
+        ON o.location_name = c.location_name
+),
+ranked AS (
+    SELECT
+        location_name,
+        cnt_origin_characters,
+        cnt_current_characters,
+        RANK() OVER (ORDER BY cnt_origin_characters DESC) AS top_origin_rank,
+        RANK() OVER (ORDER BY cnt_current_characters DESC) AS top_current_rank
+    FROM location_population
+)
+SELECT
+    location_name::varchar AS location_name,
+    (cnt_origin_characters + cnt_current_characters)::int AS total_characters,
+    top_origin_rank::int AS top_origin_rank,
+    top_current_rank::int AS top_current_rank
+FROM ranked;
+
+DROP MATERIALIZED VIEW IF EXISTS pres.data_quality;
+CREATE MATERIALIZED VIEW pres.data_quality AS
+SELECT
+    COUNT(*) FILTER (
+        WHERE origin_name IS NULL
+           OR origin_name = ''
+           OR origin_name = 'unknown'
+    )::int AS missing_origin_cnt,
+    COUNT(*) FILTER (
+        WHERE location_name IS NULL
+           OR location_name = ''
+           OR location_name = 'unknown'
+    )::int AS missing_location_cnt,
+    COUNT(*) FILTER (
+        WHERE type IS NULL
+           OR type = ''
+    )::int AS missing_type_cnt
+FROM stg.characters;
